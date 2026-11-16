@@ -1,0 +1,83 @@
+name: Build and publish Rare Username Hunter APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'source/**'
+      - '.github/workflows/android.yml'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore source archive (verified checksum)
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check brotli
+          python - <<'PY'
+          import base64, brotli, hashlib, io, tarfile
+          from pathlib import Path
+          parts = sorted(Path("source").glob("part*.b64"))
+          assert len(parts) == 4, f"Expected 4 source parts; found {len(parts)}"
+          encoded = "".join(p.read_text().strip() for p in parts)
+          packed = base64.b64decode(encoded, validate=True)
+          expected = "7fe1fdc6ed059c20a6dd3d1be09c775660ce521cf27d1d82b66ad7db2760362f"
+          assert hashlib.sha256(packed).hexdigest() == expected, "Source checksum mismatch"
+          with tarfile.open(fileobj=io.BytesIO(brotli.decompress(packed)), mode="r:") as archive:
+              archive.extractall(path=".", filter="data")
+          print("Android source restored and checksum verified.")
+          PY
+      - name: Publish readable source to repository
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app build.gradle settings.gradle gradle.properties .gitignore
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore Android source [skip ci]"
+            git push || echo "Could not push readable source; APK build will continue."
+          fi
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install SDK platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Install Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Check Python code
+        run: python -m py_compile app/src/main/python/hunter.py
+      - name: Build Android debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Upload test APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RareUsernameHunter-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish direct-download pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk RareUsernameHunter.apk
+          if gh release view v1.0.0-alpha >/dev/null 2>&1; then
+            gh release upload v1.0.0-alpha RareUsernameHunter.apk --clobber
+          else
+            gh release create v1.0.0-alpha RareUsernameHunter.apk               --title "Rare Username Hunter Android Alpha"               --notes "Experimental arm64 Android debug APK. Not yet device-tested. Public Fragment pages can return UNKNOWN. Never enter your seed phrase. Only install from a source you trust."               --prerelease --target main
+          fi
