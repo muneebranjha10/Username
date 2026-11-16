@@ -26,6 +26,7 @@ chaquopy {
     defaultConfig {
         version = '3.11'
         pip {
+            options '--find-links', "${rootProject.projectDir}/python-wheels"
             install 'telethon==1.45.0'
         }
     }
